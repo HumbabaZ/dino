@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# Virtual Environment
+venv_dino/
+.venv/
+.env
+
+# PyTorch Cache
+torch_cache/
+
+# Logs and outputs
+log/
+log_save/
+*.log
+*.out
+*.err
+
+# Large data files and checkpoints
+output/
+*.pth
+*.ckpt
+
+# Training data (if very large)
+train-100/
+test-100/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Workspace symlinks
+workspace 
