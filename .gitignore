@@ -23,6 +23,9 @@ log_save/
 
 # Large data files and checkpoints
 output/
+features/
+dino-twin-models/
+shared_folder/
 *.pth
 *.ckpt
 
@@ -50,3 +53,4 @@ Thumbs.db
 workspace 
 
 *.sh
+job_*

@@ -1,8 +1,3 @@
-"""
-Training script for DINO-Twin Network
-Modified from the original twin network training script to use DINO backbone
-"""
-
 from __future__ import print_function
 
 import argparse
@@ -17,37 +12,14 @@ import torchvision
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import Dataset
 
-# Import the DINO-Twin Network
-from dino_twin_network import create_dino_twin_network, DINOTwinNetwork
-
-# Import original components (assuming they exist in the same directory or can be imported)
-# If these modules don't exist, you'll need to create them or modify the imports
-try:
-    from callbacks import CallbackContainer, LRScheduleCallback, TimeCallback, CSVLogger, ModelCheckpoint, MonitorMode
-    from datasets import RandomExclusiveListApply, RandomApply, RandomOrganoidPairDataset, DeterministicOrganoidPairDataset, \
-        SquarePad, OnlineRandomOrganoidHistPairDataset, OnlineDeterministicOrganoidHistPairDataset
-    from metrics import BinaryAccuracy, MetricContainer, ConfusionMatrix
-except ImportError:
-    print("Warning: Some callback/dataset/metric modules not found. Using basic implementations.")
-    # Basic implementations as fallback
-    class CallbackContainer:
-        def __init__(self, callbacks=None):
-            self.callbacks = callbacks or []
-        def on_epoch_begin(self, epoch, logs): pass
-        def on_epoch_end(self, epoch, logs): return logs
-    
-    class MetricContainer:
-        def __init__(self, metrics=None):
-            self.metrics = metrics or []
-        def set_train(self): pass
-        def set_val(self): pass
-        def update(self, outputs, targets): pass
-        def summary_string(self): return ""
-        def summary(self): return {}
-        def reset(self): pass
+from callbacks import CallbackContainer, LRScheduleCallback, TimeCallback, CSVLogger, ModelCheckpoint, MonitorMode
+from datasets import RandomExclusiveListApply, RandomApply, RandomOrganoidPairDataset, DeterministicOrganoidPairDataset, \
+    SquarePad, OnlineRandomOrganoidHistPairDataset, OnlineDeterministicOrganoidHistPairDataset
+from metrics import BinaryAccuracy, MetricContainer, ConfusionMatrix
+from model import InputType, SiameseNetwork
 
 
-class DINOTwinTrainer:
+class Trainer:
     def __init__(self,
                  model: nn.Module,
                  optimizer: torch.optim.Optimizer,
@@ -74,10 +46,12 @@ class DINOTwinTrainer:
               ):
 
         for epoch in range(1, epochs + 1):
-            logs = {}
+            logs = {
+
+            }
             self.callbacks.on_epoch_begin(epoch, logs)
             train_logs = self.train_epoch(epoch, train_loader)
-            val_logs = self.val_epoch(epoch, val_loader) if val_loader else {}
+            val_logs = self.val_epoch(epoch, val_loader)
             logs.update(train_logs)
             logs.update(val_logs)
             logs = self.callbacks.on_epoch_end(epoch, logs)
@@ -97,17 +71,14 @@ class DINOTwinTrainer:
         for batch_idx, (images_1, images_2, targets) in enumerate(train_loader):
             images_1, images_2, targets = images_1.to(self.device), images_2.to(self.device), targets.to(self.device)
             self.optimizer.zero_grad()
-            
-            # Forward pass through DINO-Twin Network
             outputs = self.model(images_1, images_2)
 
             self.metrics.update(outputs, targets)
-            loss = self.criterion(outputs, targets.float())  # Ensure targets are float for BCELoss
+            loss = self.criterion(outputs, targets)
             logs["loss"] += loss.item()
 
             loss.backward()
             self.optimizer.step()
-            
             if batch_idx % self.log_interval == 0:
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\t {}'.format(
                     epoch, batch_idx * len(images_1), len(train_loader.dataset),
@@ -137,10 +108,12 @@ class DINOTwinTrainer:
                     self.device)
                 outputs = self.model(images_1, images_2)
 
-                logs["val_loss"] += self.criterion(outputs, targets.float()).item()
+                logs["val_loss"] += self.criterion(outputs, targets).item()  # sum up batch loss
 
+                # similarities = nn.functional.pairwise_distance(outputs1, outputs2)
                 self.metrics.update(outputs, targets)
-                
+                # pred = torch.where(similarities < 2.0, 1, 0)  # get the index of the max log-probability
+                # correct_test += pred.eq(targets.view_as(pred)).sum().item()
                 if batch_idx % self.log_interval == 0:
                     print('Val Epoch: {} [{}/{} ({:.0f}%)]\t'.format(
                         epoch, batch_idx * len(images_1), len(val_loader.dataset),
@@ -158,42 +131,16 @@ class DINOTwinTrainer:
         return logs
 
 
-def get_basic_metrics() -> MetricContainer:
-    """Basic metrics implementation if the original metrics module is not available"""
-    try:
-        return MetricContainer([
-            BinaryAccuracy(name='accuracy', precision=3),
-            ConfusionMatrix(pos_min=0.5, pos_max=1.0, precision=0)
-        ])
-    except:
-        return MetricContainer()
-
-
-def create_simple_dataset(data_dir, transforms=None, batch_size=64, steps_per_epoch=100):
-    """
-    Simple dataset creation if the original datasets are not available
-    You'll need to adapt this to your specific dataset structure
-    """
-    try:
-        # Try to use original datasets
-        from datasets import RandomOrganoidPairDataset, DeterministicOrganoidPairDataset, SquarePad
-        
-        train_dataset = RandomOrganoidPairDataset(
-            data_dir,
-            num_batches=steps_per_epoch,
-            batch_size=batch_size,
-            transforms=transforms
-        )
-        return train_dataset
-    except ImportError:
-        # Fallback: create a simple ImageFolder-based dataset
-        print("Original datasets not found. Please implement your dataset loading logic here.")
-        raise NotImplementedError("Please implement dataset loading for your specific use case")
+def get_metrics() -> MetricContainer:
+    return MetricContainer([
+        BinaryAccuracy(name='accuracy', precision=3),
+        ConfusionMatrix(pos_min=0.5, pos_max=1.0, precision=0)
+    ])
 
 
 def main():
     # Training settings
-    parser = argparse.ArgumentParser(description='PyTorch DINO-Twin Network for Organoids')
+    parser = argparse.ArgumentParser(description='PyTorch Siamese network for Organoids')
     parser.add_argument('--data-dir',
                         type=str,
                         default="../data/train-100",
@@ -206,14 +153,14 @@ def main():
                         )
     parser.add_argument('--batch-size',
                         type=int,
-                        default=32,  # Reduced for ViT
-                        metavar='N',
-                        help='input batch size for training (default: 32)')
-    parser.add_argument('--val-batch-size',
-                        type=int,
                         default=64,
                         metavar='N',
-                        help='input batch size for testing (default: 64)')
+                        help='input batch size for training (default: 64)')
+    parser.add_argument('--val-batch-size',
+                        type=int,
+                        default=128,
+                        metavar='N',
+                        help='input batch size for testing (default: 1024)')
     parser.add_argument('--lr',
                         type=float,
                         default=0.0001,
@@ -231,20 +178,32 @@ def main():
     parser.add_argument('--model-name',
                         type=str,
                         help='model name',
-                        default="dino_twin_test"
+                        default="test"
                         )
     parser.add_argument('--override',
                         help='Whether to override models under the same name',
                         action='store_true',
                         default=False
                         )
+    parser.add_argument('--margin',
+                        type=float,
+                        default=None,
+                        help="Margin for either contrastive loss or cosine loss"
+                        )
+    parser.add_argument('--input-type',
+                        type=str,
+                        default="images",
+                        choices=["images", "dino"],
+                        help="Input type: images or dino"
+                        )
     parser.add_argument('--embedding-dimension',
                         type=int,
-                        default=128
+                        default=384,
+                        help="Embedding dimension (384 for DINO vit_small)"
                         )
     parser.add_argument('--model-dir',
                         type=str,
-                        default="./dino-twin-models",
+                        default="./twin-network-image-models",
                         help="Where to save checkpoints and such."
                         )
     parser.add_argument('--total-steps',
@@ -257,36 +216,27 @@ def main():
                         default=100,
                         help='How many batches to train for per epoch'
                         )
-    
-    # DINO-specific arguments
+    parser.add_argument('--augment',
+                        type=float,
+                        help="Augmentation Probability",
+                        default=0.0
+                        )
+    parser.add_argument('--dino-checkpoint',
+                        type=str,
+                        default=None,
+                        help="Path to DINO checkpoint file"
+                        )
     parser.add_argument('--dino-arch',
                         type=str,
                         default='vit_small',
                         choices=['vit_tiny', 'vit_small', 'vit_base'],
-                        help='DINO ViT architecture'
+                        help="DINO architecture"
                         )
     parser.add_argument('--dino-patch-size',
                         type=int,
-                        default=8,
-                        help='Patch size for DINO ViT'
+                        default=16,
+                        help="DINO patch size"
                         )
-    parser.add_argument('--dino-weights',
-                        type=str,
-                        default=None,
-                        help='Path to pre-trained DINO weights'
-                        )
-    parser.add_argument('--freeze-backbone',
-                        action='store_true',
-                        default=False,
-                        help='Freeze DINO backbone during training'
-                        )
-    parser.add_argument('--approach',
-                        type=str,
-                        default='concatenation',
-                        choices=['concatenation', 'contrastive'],
-                        help='Twin network approach'
-                        )
-    
     args = parser.parse_args()
 
     if args.val_data_dir is None:
@@ -301,13 +251,17 @@ def main():
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
 
-    model_path = os.path.join(model_dir, "dino_twin_network.pt")
+    model_path = os.path.join(model_dir, "siamese_network.pt")
 
     if os.path.exists(model_path) and not args.override:
         print("Model exists. Specify --override to override")
         exit()
+    if os.path.exists(model_path) and args.override:
+        shutil.rmtree(model_dir)
 
     use_cuda = not args.no_cuda and torch.cuda.is_available()
+    # use_mps = not args.no_mps and torch.backends.mps.is_available()
+
     torch.manual_seed(args.seed)
 
     if use_cuda:
@@ -317,92 +271,141 @@ def main():
         print("Using CPU...")
         device = torch.device("cpu")
 
-    # Data loading (you'll need to implement this based on your dataset structure)
-    transform = torchvision.transforms.Compose([
-        torchvision.transforms.Resize((224, 224)),  # ViT typically uses 224x224
-        torchvision.transforms.ToTensor(),
-        torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+    train_kwargs = {
+        'batch_size': args.batch_size
+    }
+    test_kwargs = {
+        'batch_size': args.val_batch_size
+    }
+    if use_cuda:
+        num_workers = len(os.sched_getaffinity(0))
+        print(f"Running with {num_workers} workers...")
+        cuda_kwargs = {
+            'num_workers': num_workers,
+            'pin_memory': True,
+            'shuffle': True
+        }
+        train_kwargs.update(cuda_kwargs)
+        test_kwargs.update(cuda_kwargs)
 
-    # You'll need to implement dataset loading here based on your specific dataset
-    # This is a placeholder - adapt to your dataset structure
-    print("Note: You need to implement dataset loading based on your specific dataset structure")
-    
-    # Create DINO-Twin Network model
-    model = create_dino_twin_network(
-        arch=args.dino_arch,
-        patch_size=args.dino_patch_size,
-        pretrained_weights=args.dino_weights,
+    if args.input_type == "images":
+        input_type = InputType.IMAGES
+    elif args.input_type == "dino":
+        input_type = InputType.DINO
+        if args.dino_checkpoint is None:
+            raise ValueError("DINO checkpoint path must be provided when using DINO input type")
+    else:
+        raise ValueError(f"Unsupported input type: {args.input_type}")
+
+    if input_type == InputType.IMAGES or input_type == InputType.DINO:
+        resize_size = 224 if input_type == InputType.DINO else 256
+        
+        train_dataset = RandomOrganoidPairDataset(
+            args.data_dir,
+            num_batches=args.steps_per_epoch,
+            batch_size=args.batch_size,
+            transforms=torchvision.transforms.Compose([
+                SquarePad(),
+                torchvision.transforms.Resize(
+                    (resize_size, resize_size),
+                    interpolation=torchvision.transforms.InterpolationMode.BILINEAR,
+                    antialias=True
+                ),
+                torchvision.transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                ) if input_type == InputType.DINO else nn.Identity(),
+                torchvision.transforms.RandomHorizontalFlip(p=args.augment),
+                torchvision.transforms.RandomVerticalFlip(p=args.augment),
+                RandomApply(RandomExclusiveListApply(
+                    choice_modules=nn.ModuleList([
+                        torchvision.transforms.RandomRotation(degrees=180)
+                    ])
+                ), p=args.augment)
+            ])
+        )
+        
+        test_dataset = DeterministicOrganoidPairDataset(
+            args.val_data_dir,
+            transforms=torch.nn.Sequential(
+                SquarePad(),
+                torchvision.transforms.Resize(
+                    (resize_size, resize_size),
+                    interpolation=torchvision.transforms.InterpolationMode.BILINEAR,
+                    antialias=True
+                ),
+                torchvision.transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                ) if input_type == InputType.DINO else nn.Identity(),
+            )
+        )
+    else:
+        raise NotImplementedError(f"Input Type {input_type} not recognized.")
+
+    print("Train Set Size: ", len(train_dataset))
+    print("Val Set Size: ", len(test_dataset))
+    print(
+        f"Training on {len(train_dataset.organoid_classes)} organoid classes. Validating on {len(set(test_dataset.organoid_classes))} organoid classes.")
+
+    train_loader = torch.utils.data.DataLoader(train_dataset, **train_kwargs)
+    val_loader = torch.utils.data.DataLoader(test_dataset, **test_kwargs)
+
+    # model building phase
+    model = SiameseNetwork(
+        input_type=input_type,
         embedding_dimension=args.embedding_dimension,
-        approach=args.approach
+        dino_checkpoint_path=args.dino_checkpoint,
+        dino_arch=args.dino_arch,
+        dino_patch_size=args.dino_patch_size
     ).to(device)
 
-    # Set backbone to be frozen if specified
-    if args.freeze_backbone and hasattr(model, 'backbone'):
-        for param in model.backbone.parameters():
-            param.requires_grad = False
-        print("DINO backbone frozen")
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr) # optimizer for what parameters?(model.fc.parameters())
 
-    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
-    print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+    metrics = get_metrics()
 
-    # Optimizer
-    optimizer = optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()), 
-        lr=args.lr,
-        weight_decay=0.01
-    )
-
-    # Metrics
-    metrics = get_basic_metrics()
-
-    # Create dummy data loaders for testing (replace with your actual dataset)
-    print("Creating dummy data for testing. Replace with your actual dataset loading.")
-    
-    # Dummy dataset for testing
-    dummy_train_data = torch.utils.data.TensorDataset(
-        torch.randn(1000, 3, 224, 224),  # images_1
-        torch.randn(1000, 3, 224, 224),  # images_2
-        torch.randint(0, 2, (1000,))     # targets
-    )
-    dummy_val_data = torch.utils.data.TensorDataset(
-        torch.randn(200, 3, 224, 224),
-        torch.randn(200, 3, 224, 224),
-        torch.randint(0, 2, (200,))
-    )
-    
-    train_loader = torch.utils.data.DataLoader(
-        dummy_train_data, 
-        batch_size=args.batch_size, 
-        shuffle=True
-    )
-    val_loader = torch.utils.data.DataLoader(
-        dummy_val_data,
-        batch_size=args.val_batch_size,
-        shuffle=False
-    )
-
-    # Trainer
-    trainer = DINOTwinTrainer(
+    trainer = Trainer(
         model=model,
         log_interval=10,
         optimizer=optimizer,
         criterion=nn.BCELoss(),
         device=device,
         metrics=metrics,
-        callbacks=CallbackContainer()  # Add actual callbacks if available
+        callbacks=CallbackContainer([
+            TimeCallback(),
+            CSVLogger(os.path.join(model_dir, "history.csv")),
+            ModelCheckpoint(
+                monitor="val_loss",
+                models_dict={
+                    "siamese.pt": model
+                },
+                checkpoint_dir=os.path.join(model_dir, "val_loss_checkpoints")
+            ),
+            ModelCheckpoint(
+                monitor='val_accuracy',
+                mode=MonitorMode.MAX,
+                models_dict={
+                    "siamese.pt": model
+                },
+                checkpoint_dir=os.path.join(model_dir, "val_accuracy_checkpoints")
+            ),
+            LRScheduleCallback(
+                ReduceLROnPlateau(
+                    optimizer,
+                    mode="min",
+                    factor=0.5,
+                    patience=20
+                ),
+                monitor="loss"
+            )
+        ])
     )
 
-    print(f"Starting training for {epochs} epochs...")
     trainer.train(epochs, train_loader, val_loader)
 
-    # Save model
-    if hasattr(model, 'kwargs'):
+    if not os.path.exists(model_path):
         torch.save([model.kwargs, model.state_dict()], model_path)
-    else:
-        torch.save(model.state_dict(), model_path)
-    print(f"Model saved to {model_path}")
 
 
 if __name__ == '__main__':
-    main() 
+    main()
